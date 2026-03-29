@@ -1,0 +1,7 @@
+name = "classtable-api"
+main = "src/index.ts"
+compatibility_date = "2024-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+SOURCE_BASE_URL = "http://class.ckgsh.ntpc.edu.tw/classtable"

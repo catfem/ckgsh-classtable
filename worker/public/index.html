@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>課表查詢系統</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --primary: #4f46e5;
+      --primary-light: #818cf8;
+      --primary-dark: #3730a3;
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --morning: #dbeafe;
+      --afternoon: #fef3c7;
+      --accent: #f43f5e;
+      --radius: 12px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    header {
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: white;
+      padding: 20px 24px;
+      box-shadow: 0 4px 20px rgba(79,70,229,0.3);
+    }
+
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    header p {
+      font-size: 0.85rem;
+      opacity: 0.8;
+      margin-top: 4px;
+    }
+
+    .controls {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .control-group label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    select {
+      appearance: none;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 32px 8px 12px;
+      font-size: 0.9rem;
+      color: var(--text);
+      cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      min-width: 140px;
+      transition: border-color 0.15s;
+    }
+
+    select:focus {
+      outline: none;
+      border-color: var(--primary-light);
+      box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+    }
+
+    select:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .type-tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 3px;
+    }
+
+    .type-tab {
+      padding: 6px 16px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .type-tab.active {
+      background: var(--primary);
+      color: white;
+      box-shadow: 0 2px 8px rgba(79,70,229,0.3);
+    }
+
+    .type-tab:hover:not(.active) {
+      color: var(--text);
+      background: var(--border);
+    }
+
+    .main {
+      padding: 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 80px 24px;
+      color: var(--text-muted);
+    }
+
+    .empty-state .icon {
+      font-size: 3rem;
+      margin-bottom: 16px;
+    }
+
+    .empty-state h2 {
+      font-size: 1.2rem;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+
+    .timetable-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .timetable-title .badge {
+      font-size: 0.75rem;
+      background: var(--primary);
+      color: white;
+      padding: 2px 10px;
+      border-radius: 20px;
+      font-weight: 500;
+    }
+
+    .timetable-wrapper {
+      overflow-x: auto;
+      border-radius: var(--radius);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.04);
+    }
+
+    table.timetable {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      min-width: 700px;
+    }
+
+    table.timetable th {
+      background: var(--primary);
+      color: white;
+      padding: 12px 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      position: sticky;
+      top: 0;
+    }
+
+    table.timetable th:first-child {
+      width: 90px;
+      border-radius: var(--radius) 0 0 0;
+    }
+
+    table.timetable th:last-child {
+      border-radius: 0 var(--radius) 0 0;
+    }
+
+    table.timetable td {
+      border: 1px solid var(--border);
+      padding: 8px;
+      vertical-align: top;
+      font-size: 0.82rem;
+      min-height: 60px;
+      height: 70px;
+      transition: background 0.1s;
+    }
+
+    table.timetable tr:hover td {
+      background: #f1f5f9;
+    }
+
+    .period-cell {
+      background: var(--bg);
+      font-weight: 600;
+      text-align: center;
+      vertical-align: middle;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      width: 90px;
+    }
+
+    .period-cell .period-name {
+      display: block;
+      color: var(--text);
+      font-size: 0.82rem;
+    }
+
+    .period-cell .period-time {
+      display: block;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .morning-row .period-cell {
+      background: var(--morning);
+    }
+
+    .afternoon-row .period-cell {
+      background: var(--afternoon);
+    }
+
+    .course-card {
+      background: white;
+      border-left: 3px solid var(--primary);
+      border-radius: 6px;
+      padding: 6px 8px;
+      margin-bottom: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+
+    .course-card:last-child {
+      margin-bottom: 0;
+    }
+
+    .course-name {
+      font-weight: 600;
+      color: var(--primary-dark);
+      font-size: 0.82rem;
+      line-height: 1.3;
+    }
+
+    .course-meta {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .course-meta span {
+      margin-right: 8px;
+    }
+
+    .week-type {
+      display: inline-block;
+      font-size: 0.65rem;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-weight: 500;
+    }
+
+    .week-type.odd {
+      background: #fce7f3;
+      color: #be185d;
+    }
+
+    .week-type.even {
+      background: #d1fae5;
+      color: #065f46;
+    }
+
+    .loading {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 60px;
+    }
+
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .error-msg {
+      background: #fef2f2;
+      color: #dc2626;
+      padding: 16px 20px;
+      border-radius: var(--radius);
+      border: 1px solid #fecaca;
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 640px) {
+      .controls {
+        padding: 12px 16px;
+      }
+      .main {
+        padding: 16px;
+      }
+      select {
+        min-width: 120px;
+        font-size: 0.85rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>課表查詢系統</h1>
+  <p>課綱國民中學 課表查詢</p>
+</header>
+
+<div class="controls">
+  <div class="control-group">
+    <label>學期</label>
+    <select id="termSelect" disabled>
+      <option value="">載入中...</option>
+    </select>
+  </div>
+
+  <div class="control-group">
+    <label>查詢方式</label>
+    <div class="type-tabs">
+      <button class="type-tab active" data-type="class">班級</button>
+      <button class="type-tab" data-type="teacher">教師</button>
+      <button class="type-tab" data-type="room">教室</button>
+    </div>
+  </div>
+
+  <div class="control-group">
+    <label id="selectLabel">選擇班級</label>
+    <select id="itemSelect" disabled>
+      <option value="">請先選擇學期</option>
+    </select>
+  </div>
+</div>
+
+<div class="main" id="content">
+  <div class="empty-state">
+    <div class="icon">&#128218;</div>
+    <h2>選擇查詢條件</h2>
+    <p>請先選擇學期，再選擇班級、教師或教室</p>
+  </div>
+</div>
+
+<script>
+const API_BASE = location.origin;
+let currentType = 'class';
+
+const typeLabels = { class: '班級', teacher: '教師', room: '教室' };
+const typeEndpoints = { class: 'classes', teacher: 'teachers', room: 'rooms' };
+
+const termSelect = document.getElementById('termSelect');
+const itemSelect = document.getElementById('itemSelect');
+const selectLabel = document.getElementById('selectLabel');
+const content = document.getElementById('content');
+
+// Type tab buttons
+document.querySelectorAll('.type-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.type-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentType = btn.dataset.type;
+    selectLabel.textContent = `選擇${typeLabels[currentType]}`;
+    loadItems();
+  });
+});
+
+termSelect.addEventListener('change', loadItems);
+itemSelect.addEventListener('change', loadTimetable);
+
+async function loadTerms() {
+  try {
+    const res = await fetch(`${API_BASE}/api/terms`);
+    const data = await res.json();
+    termSelect.innerHTML = '';
+    if (data.terms && data.terms.length > 0) {
+      data.terms.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.value;
+        opt.textContent = t.label;
+        termSelect.appendChild(opt);
+      });
+      termSelect.disabled = false;
+      loadItems();
+    } else {
+      termSelect.innerHTML = '<option value="">無可用學期</option>';
+    }
+  } catch (e) {
+    termSelect.innerHTML = '<option value="">載入失敗</option>';
+  }
+}
+
+async function loadItems() {
+  const term = termSelect.value;
+  if (!term) return;
+
+  itemSelect.disabled = true;
+  itemSelect.innerHTML = '<option value="">載入中...</option>';
+
+  try {
+    const endpoint = typeEndpoints[currentType];
+    const res = await fetch(`${API_BASE}/api/${endpoint}?term=${encodeURIComponent(term)}`);
+    const data = await res.json();
+    const items = data[endpoint] || [];
+
+    itemSelect.innerHTML = `<option value="">請選擇${typeLabels[currentType]}</option>`;
+    items.forEach(item => {
+      const opt = document.createElement('option');
+      opt.value = item.value;
+      opt.textContent = item.label;
+      itemSelect.appendChild(opt);
+    });
+    itemSelect.disabled = false;
+  } catch (e) {
+    itemSelect.innerHTML = '<option value="">載入失敗</option>';
+  }
+}
+
+async function loadTimetable() {
+  const code = itemSelect.value;
+  const term = termSelect.value;
+  if (!code || !term) return;
+
+  content.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+  try {
+    const res = await fetch(`${API_BASE}/api/timetable?type=${currentType}&code=${encodeURIComponent(code)}&term=${encodeURIComponent(term)}`);
+    const data = await res.json();
+
+    if (data.error) {
+      content.innerHTML = `<div class="error-msg">${data.error}</div>`;
+      return;
+    }
+
+    renderTimetable(data);
+  } catch (e) {
+    content.innerHTML = `<div class="error-msg">載入失敗：${e.message}</div>`;
+  }
+}
+
+function renderTimetable(data) {
+  const periods = data.periods || [];
+  const schedule = data.schedule || [];
+  const days = data.days || ['一','二','三','四','五','六'];
+
+  // Build schedule map: schedule[period][day] = courses[]
+  const map = {};
+  schedule.forEach(cell => {
+    const key = `${cell.period}_${cell.day}`;
+    map[key] = cell.courses || [];
+  });
+
+  const itemLabel = itemSelect.options[itemSelect.selectedIndex]?.text || data.code;
+
+  let html = `
+    <div class="timetable-title">
+      ${itemLabel} 課表
+      <span class="badge">${data.term || ''}</span>
+    </div>
+    <div class="timetable-wrapper">
+      <table class="timetable">
+        <thead>
+          <tr>
+            <th>節次</th>
+            ${days.map(d => `<th>星期${d}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+  `;
+
+  periods.forEach((p, pi) => {
+    const sectionClass = p.section === 'morning' ? 'morning-row' : 'afternoon-row';
+    html += `<tr class="${sectionClass}">`;
+    html += `<td class="period-cell">
+      <span class="period-name">${p.name}</span>
+      <span class="period-time">${p.time}</span>
+    </td>`;
+
+    for (let d = 0; d < days.length; d++) {
+      const key = `${pi}_${d}`;
+      const courses = map[key] || [];
+      html += '<td>';
+      courses.forEach(c => {
+        html += `<div class="course-card">`;
+        html += `<div class="course-name">${escHtml(c.name)}</div>`;
+        html += `<div class="course-meta">`;
+        if (c.teacher) html += `<span>${escHtml(c.teacher)}</span>`;
+        if (c.room) html += `<span>${escHtml(c.room)}</span>`;
+        if (c.weekType) {
+          const cls = c.weekType.includes('單') ? 'odd' : 'even';
+          html += `<span class="week-type ${cls}">${escHtml(c.weekType)}</span>`;
+        }
+        html += `</div></div>`;
+      });
+      html += '</td>';
+    }
+    html += '</tr>';
+  });
+
+  html += '</tbody></table></div>';
+  content.innerHTML = html;
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+loadTerms();
+</script>
+</body>
+</html>
