@@ -523,6 +523,25 @@ export default {
       });
     }
 
+    // GET /api - API docs
+    if (url.pathname === "/api" && request.method === "GET") {
+      return jsonResponse({
+        name: "classtable-api",
+        version: "1.0.0",
+        source: "http://class.ckgsh.ntpc.edu.tw/classtable",
+        endpoints: [
+          { method: "GET", path: "/api/terms", desc: "List all terms", params: [] },
+          { method: "GET", path: "/api/classes", desc: "List classes for a term", params: ["term (e.g. 114,2)"] },
+          { method: "GET", path: "/api/teachers", desc: "List teachers for a term", params: ["term"] },
+          { method: "GET", path: "/api/rooms", desc: "List rooms for a term", params: ["term"] },
+          { method: "GET", path: "/api/weeks", desc: "List weeks for a term", params: ["term"] },
+          { method: "GET", path: "/api/timetable", desc: "Get timetable data", params: ["type (class|teacher|room)", "code", "term", "week (optional)"] },
+          { method: "GET", path: "/api/health", desc: "Health check", params: [] },
+        ],
+        example: "/api/timetable?type=class&code=101&term=114,2",
+      });
+    }
+
     // GET /api/terms
     if (url.pathname === "/api/terms") {
       try {
