@@ -218,16 +218,27 @@ function parseCellCourses(cellHtml: string): CourseInfo[] {
   return courses;
 }
 
+// Split HTML by a tag pattern, returning inner content of each match
+function splitByTag(html: string, openTag: RegExp, closeTag: string): string[] {
+  const results: string[] = [];
+  let match: RegExpExecArray | null;
+  const re = new RegExp(openTag.source, "gi");
+  while ((match = re.exec(html)) !== null) {
+    const start = re.lastIndex;
+    const end = html.indexOf(closeTag, start);
+    if (end === -1) break;
+    results.push(html.substring(start, end));
+  }
+  return results;
+}
+
 // Parse timetable from down.asp HTML
-// The HTML table uses rowspan for 上午/下午 labels, so we need a grid-based approach
 function parseTimetable(html: string): TimetableResponse | null {
-  // Extract title
   const titleMatch = html.match(
     /<span[^>]*class="view_title"[^>]*>([^<]+)<\/span>/
   );
   const title = titleMatch ? titleMatch[1].trim() : "課表";
 
-  // Find the main table
   const tableMatch = html.match(
     /<table[^>]*class="classTable"[^>]*>([\s\S]*?)<\/table>/i
   );
@@ -235,113 +246,29 @@ function parseTimetable(html: string): TimetableResponse | null {
 
   const tableHtml = tableMatch[1];
 
-  // Build a 2D grid by parsing all rows and handling colspan/rowspan
-  const grid: string[][] = [];
-  const rowSpans: number[][] = []; // track which cells are occupied by rowspan
-
-  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  let rowMatch;
-  let rowIndex = 0;
-
-  while ((rowMatch = rowRegex.exec(tableHtml)) !== null) {
-    if (!grid[rowIndex]) {
-      grid[rowIndex] = [];
-      rowSpans[rowIndex] = [];
-    }
-
-    // Find the next available column (accounting for rowspan from previous rows)
-    let col = 0;
-    while (rowSpans[rowIndex] && rowSpans[rowIndex][col]) {
-      col++;
-    }
-
-    const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-    let cellMatch;
-
-    while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
-      // Get colspan and rowspan from the td tag
-      const tdTag = cellMatch[0].match(/<td([^>]*)>/i);
-      const colspan = tdTag
-        ? parseInt(tdTag[1].match(/colspan="(\d+)"/i)?.[1] || "1", 10)
-        : 1;
-      const rowspan = tdTag
-        ? parseInt(tdTag[1].match(/rowspan="(\d+)"/i)?.[1] || "1", 10)
-        : 1;
-
-      const cellContent = cellMatch[1];
-
-      // Place cell in grid, spanning as needed
-      for (let c = 0; c < colspan; c++) {
-        // Find next available column
-        while (rowSpans[rowIndex] && rowSpans[rowIndex][col]) {
-          col++;
-        }
-
-        if (!grid[rowIndex]) grid[rowIndex] = [];
-        grid[rowIndex][col] = c === 0 ? cellContent : "";
-
-        // Mark rows below as occupied by this rowspan
-        for (let r = 1; r < rowspan; r++) {
-          const targetRow = rowIndex + r;
-          if (!rowSpans[targetRow]) rowSpans[targetRow] = [];
-          rowSpans[targetRow][col] = 1;
-        }
-
-        col++;
-      }
-    }
-
-    rowIndex++;
-  }
-
-  // Now extract the schedule from the grid
-  // Row 0: title (colspan=9)
-  // Row 1: headers (空, 空, 空, 一, 二, 三, 四, 五, 六) = 9 cols
-  // Rows 2+: data rows with section header (rowspan=5 for 上午, rowspan=5 for 下午)
-  //   Each data row has: timeHeader, periodName, then 6 day cells
-  //   So data rows have columns: [上午/下午] (from rowspan), time, period, mon, tue, wed, thu, fri, sat
+  // Split into rows
+  const rows = splitByTag(tableHtml, /<tr[^>]*>/, "</tr>");
 
   const schedule: ScheduleCell[] = [];
   let periodIndex = 0;
 
-  for (let r = 0; r < grid.length; r++) {
-    const row = grid[r];
-    if (!row) continue;
-
-    // Find tdColumn cells in this row
-    const dayCells: { col: number; html: string }[] = [];
-    let hasDataCells = false;
-
-    for (let c = 0; c < row.length; c++) {
-      const cell = row[c];
-      if (cell && cell.includes("tdColumn")) {
-        dayCells.push({ col: c, html: cell });
-        hasDataCells = true;
-      }
+  for (const rowHtml of rows) {
+    // Find all td cells in this row
+    const cells: { attrs: string; html: string }[] = [];
+    const cellRe = /<td([^>]*)>([\s\S]*?)<\/td>/gi;
+    let cm: RegExpExecArray | null;
+    while ((cm = cellRe.exec(rowHtml)) !== null) {
+      cells.push({ attrs: cm[1], html: cm[2] });
     }
 
-    if (!hasDataCells) continue;
+    // Data rows have exactly 6 tdColumn cells
+    const tdCols = cells.filter((c) => c.attrs.includes("tdColumn"));
+    if (tdCols.length !== 6) continue;
 
-    // This is a period row - extract courses for each day
-    // dayCells should have 6 entries (Mon-Sat)
-    for (let d = 0; d < dayCells.length && d < 6; d++) {
-      const courses = parseCellCourses(dayCells[d].html);
-      schedule.push({
-        period: periodIndex,
-        day: d,
-        courses,
-      });
+    for (let d = 0; d < 6; d++) {
+      const courses = parseCellCourses(tdCols[d].html);
+      schedule.push({ period: periodIndex, day: d, courses });
     }
-
-    // Fill in any missing days
-    for (let d = dayCells.length; d < 6; d++) {
-      schedule.push({
-        period: periodIndex,
-        day: d,
-        courses: [],
-      });
-    }
-
     periodIndex++;
   }
 
@@ -362,167 +289,218 @@ const HTML = /*html*/ `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>課表查詢系統</title>
+  <title>課表查詢</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    :root{--pri:#4f46e5;--pri-l:#818cf8;--pri-d:#3730a3;--bg:#f8fafc;--sf:#fff;--bd:#e2e8f0;--tx:#1e293b;--tm:#64748b;--am:#dbeafe;--pm:#fef3c7;--r:12px}
-    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}
-    header{background:linear-gradient(135deg,var(--pri),var(--pri-d));color:#fff;padding:20px 24px;box-shadow:0 4px 20px rgba(79,70,229,.3)}
-    header h1{font-size:1.5rem;font-weight:700}
-    header p{font-size:.85rem;opacity:.8;margin-top:4px}
-    .bar{background:var(--sf);border-bottom:1px solid var(--bd);padding:16px 24px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
-    .cg{display:flex;flex-direction:column;gap:4px}
-    .cg label{font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--tm)}
-    select{appearance:none;background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px 32px 8px 12px;font-size:.9rem;color:var(--tx);cursor:pointer;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 8L1 3h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;min-width:130px;transition:border-color .15s}
-    select:focus{outline:none;border-color:var(--pri-l);box-shadow:0 0 0 3px rgba(79,70,229,.1)}
-    select:disabled{opacity:.5;cursor:not-allowed}
-    .tabs{display:flex;gap:4px;background:var(--bg);border-radius:8px;padding:3px}
-    .tab{padding:6px 14px;border-radius:6px;border:none;background:0 0;font-size:.85rem;font-weight:500;color:var(--tm);cursor:pointer;transition:all .15s}
-    .tab.active{background:var(--pri);color:#fff;box-shadow:0 2px 8px rgba(79,70,229,.3)}
-    .tab:hover:not(.active){color:var(--tx);background:var(--bd)}
-    .main{padding:24px;max-width:1200px;margin:0 auto}
-    .empty{text-align:center;padding:80px 24px;color:var(--tm)}
-    .empty .ic{font-size:3rem;margin-bottom:16px}
-    .empty h2{font-size:1.2rem;color:var(--tx);margin-bottom:8px}
-    .tt{font-size:1.1rem;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-    .badge{font-size:.75rem;background:var(--pri);color:#fff;padding:2px 10px;border-radius:20px;font-weight:500}
-    .wrap{overflow-x:auto;border-radius:var(--r);box-shadow:0 1px 3px rgba(0,0,0,.08),0 8px 24px rgba(0,0,0,.04)}
-    table.t{width:100%;border-collapse:collapse;background:var(--sf);min-width:700px}
-    table.t th{background:var(--pri);color:#fff;padding:12px 8px;font-size:.85rem;font-weight:600}
-    table.t td{border:1px solid var(--bd);padding:8px;vertical-align:top;font-size:.82rem;height:72px}
-    table.t tr:hover>td{background:#f1f5f9}
-    .pc{background:var(--bg);font-weight:600;text-align:center;vertical-align:middle;font-size:.78rem;color:var(--tm);width:88px}
-    .pc .pn{display:block;color:var(--tx);font-size:.82rem}
-    .pc .pt{display:block;font-size:.7rem;color:var(--tm);margin-top:2px}
-    .am .pc{background:var(--am)}
-    .pm .pc{background:var(--pm)}
-    .cc{background:#fff;border-left:3px solid var(--pri);border-radius:6px;padding:6px 8px;margin-bottom:4px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
-    .cc:last-child{margin-bottom:0}
-    .cn{font-weight:600;color:var(--pri-d);font-size:.82rem;line-height:1.3}
-    .cm{font-size:.72rem;color:var(--tm);margin-top:2px}
-    .cm span{margin-right:8px}
-    .wt{display:inline-block;font-size:.65rem;padding:1px 6px;border-radius:10px;font-weight:500}
-    .wt.o{background:#fce7f3;color:#be185d}
-    .wt.e{background:#d1fae5;color:#065f46}
-    .ld{display:flex;justify-content:center;align-items:center;padding:60px}
-    .sp{width:36px;height:36px;border:3px solid var(--bd);border-top-color:var(--pri);border-radius:50%;animation:spin .8s linear infinite}
+    :root{--bg:#fff;--tx:#37352f;--tm:#9b9a97;--bd:#e9e9e7;--br:#f7f6f3;--ho:#f1f1ef;--ac:#2eaadc;--am:#fff8e1;--pm:#f3e8fd;--r:4px}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Helvetica Neue",sans-serif;background:var(--bg);color:var(--tx);line-height:1.5;-webkit-font-smoothing:antialiased}
+    
+    .page{max-width:960px;margin:0 auto;padding:48px 24px 120px}
+    
+    .title{font-size:2rem;font-weight:700;letter-spacing:-.03em;margin-bottom:4px}
+    .subtitle{color:var(--tm);font-size:.875rem;margin-bottom:36px}
+    
+    /* Filter row */
+    .filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;align-items:center}
+    
+    .pill{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;border:none;background:var(--br);color:var(--tx);font-size:.8rem;cursor:pointer;transition:background .12s;font-family:inherit}
+    .pill:hover{background:var(--ho)}
+    .pill.on{background:var(--tx);color:#fff}
+    
+    .sel{appearance:none;border:none;background:var(--br);border-radius:var(--r);padding:5px 26px 5px 10px;font-size:.8rem;color:var(--tx);cursor:pointer;font-family:inherit;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%239b9a97' d='M5 7L0 2h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center;transition:background .12s;max-width:200px}
+    .sel:hover{background:var(--ho)}
+    .sel:focus{outline:2px solid var(--ac);outline-offset:-2px}
+    .sel:disabled{opacity:.4}
+    .sel option{font-size:.8rem}
+    
+    .sep{width:1px;height:20px;background:var(--bd);margin:0 4px}
+    
+    /* Table */
+    .table-wrap{overflow-x:auto;margin-top:20px}
+    
+    .tt{width:100%;border-collapse:collapse;font-size:.8rem;table-layout:fixed}
+    .tt th{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--bd);padding:8px 6px;text-align:center;font-weight:500;color:var(--tm);font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;z-index:1}
+    .tt th:first-child{width:64px}
+    
+    .tt td{border-bottom:1px solid var(--br);padding:6px 8px;vertical-align:top;height:72px;transition:background .08s;overflow:hidden}
+    .tt tr:hover td{background:var(--br)}
+    
+    .per{text-align:center;white-space:nowrap;color:var(--tm);font-size:.75rem;padding:8px 2px}
+    .per b{display:block;color:var(--tx);font-weight:600;font-size:.78rem}
+    .per i{display:block;font-style:normal;font-size:.68rem;color:var(--tm);margin-top:1px}
+    
+    .morning td:first-child{background:transparent}
+    .afternoon td:first-child{background:transparent}
+    
+    /* Course card */
+    .card{padding:4px 0;border-bottom:1px solid transparent}
+    .card:last-child{border-bottom:none}
+    .card+.card{margin-top:4px}
+    .cn{font-weight:600;font-size:.78rem;line-height:1.3}
+    .cm{font-size:.68rem;color:var(--tm);margin-top:1px}
+    .tag{display:inline;font-size:.65rem;padding:1px 5px;border-radius:3px;font-weight:500;margin-left:4px}
+    .tag.o{background:#fff3e0;color:#e65100}
+    .tag.e{background:#e8f5e9;color:#2e7d32}
+    
+    /* States */
+    .empty{text-align:center;padding:100px 20px;color:var(--tm)}
+    .empty h2{font-size:1.1rem;font-weight:500;color:var(--tx);margin-bottom:6px}
+    .empty p{font-size:.85rem}
+    .ld{display:flex;justify-content:center;padding:80px}
+    .sp{width:24px;height:24px;border:2px solid var(--bd);border-top-color:var(--tx);border-radius:50%;animation:spin .6s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
-    .err{background:#fef2f2;color:#dc2626;padding:16px 20px;border-radius:var(--r);border:1px solid #fecaca;font-size:.9rem}
-    .view-tabs{display:flex;gap:4px;background:var(--bg);border-radius:8px;padding:3px}
-    .vt{padding:6px 14px;border-radius:6px;border:none;background:0 0;font-size:.85rem;font-weight:500;color:var(--tm);cursor:pointer;transition:all .15s}
-    .vt.active{background:#059669;color:#fff;box-shadow:0 2px 8px rgba(5,150,105,.3)}
-    .vt:hover:not(.vt.active){color:var(--tx);background:var(--bd)}
-    @media(max-width:640px){.bar{padding:12px 16px}.main{padding:16px}select{min-width:100px;font-size:.85rem}}
+    .err{color:#eb5757;font-size:.85rem;padding:12px 0}
+    
+    /* Header line */
+    .head{display:flex;align-items:baseline;gap:12px;margin-bottom:28px;flex-wrap:wrap}
+    .head h2{font-size:1.15rem;font-weight:600;letter-spacing:-.02em}
+    .head .meta{font-size:.75rem;color:var(--tm)}
+    
+    @media(max-width:640px){
+      .page{padding:24px 16px 80px}
+      .title{font-size:1.5rem}
+      .filters{gap:6px}
+      .sel{font-size:.75rem;max-width:140px}
+      .tt{font-size:.75rem}
+      .tt th,.tt td{padding:4px 8px}
+    }
   </style>
 </head>
 <body>
-<header><h1>課表查詢系統</h1><p>崇光國民中學 課表查詢</p></header>
-<div class="bar">
-  <div class="cg"><label>學期</label><select id="termSel" disabled><option>載入中...</option></select></div>
-  <div class="cg"><label>視圖</label><div class="view-tabs"><button class="vt active" data-view="term">學期課表</button><button class="vt" data-view="week">每周課表</button></div></div>
-  <div class="cg" id="weekGrp" style="display:none"><label>周次</label><select id="weekSel" disabled><option>請先選擇學期</option></select></div>
-  <div class="cg"><label>查詢</label><div class="tabs"><button class="tab active" data-type="class">班級</button><button class="tab" data-type="teacher">教師</button><button class="tab" data-type="room">教室</button></div></div>
-  <div class="cg"><label id="sLbl">選擇班級</label><select id="itemSel" disabled><option>請先選擇學期</option></select></div>
+<div class="page">
+  <h1 class="title">課表查詢</h1>
+  <p class="subtitle">崇光國民中學</p>
+  
+  <div class="filters">
+    <select class="sel" id="termSel" disabled><option>載入中...</option></select>
+    <div class="sep"></div>
+    <button class="pill on" data-view="term">學期</button>
+    <button class="pill" data-view="week">每周</button>
+    <select class="sel" id="weekSel" disabled style="display:none"><option>選擇周次</option></select>
+    <div class="sep"></div>
+    <button class="pill on" data-type="class">班級</button>
+    <button class="pill" data-type="teacher">教師</button>
+    <button class="pill" data-type="room">教室</button>
+    <select class="sel" id="itemSel" disabled><option>選擇查詢</option></select>
+  </div>
+  
+  <div id="main"><div class="empty"><h2>選擇條件開始查詢</h2><p>選取學期與班級、教師或教室</p></div></div>
 </div>
-<div class="main" id="main"><div class="empty"><div class="ic">&#128218;</div><h2>選擇查詢條件</h2><p>請先選擇學期，再選擇班級、教師或教室</p></div></div>
 <script>
 (function(){
-var BASE=location.origin,curType='class',curView='term';
-var tL={class:'班級',teacher:'教師',room:'教室'},tE={class:'classes',teacher:'teachers',room:'rooms'};
-var $t=document.getElementById('termSel'),$w=document.getElementById('weekSel'),$i=document.getElementById('itemSel');
-var $sl=document.getElementById('sLbl'),$m=document.getElementById('main'),$wg=document.getElementById('weekGrp');
+var B=location.origin,CT='class',CV='term';
+var TL={class:'班級',teacher:'教師',room:'教室'},TE={class:'classes',teacher:'teachers',room:'rooms'};
+var tS=document.getElementById('termSel'),wS=document.getElementById('weekSel'),iS=document.getElementById('itemSel');
+var mn=document.getElementById('main');
 
-document.querySelectorAll('.tab').forEach(function(b){b.onclick=function(){
-  document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active')});
-  b.classList.add('active');curType=b.dataset.type;$sl.textContent='選擇'+tL[curType];loadItems();
+document.querySelectorAll('[data-type]').forEach(function(b){b.onclick=function(){
+  document.querySelectorAll('[data-type]').forEach(function(x){x.classList.remove('on')});
+  b.classList.add('on');CT=b.dataset.type;loadItems();
 }});
-document.querySelectorAll('.vt').forEach(function(b){b.onclick=function(){
-  document.querySelectorAll('.vt').forEach(function(x){x.classList.remove('active')});
-  b.classList.add('active');curView=b.dataset.view;
-  $wg.style.display=curView==='week'?'':'none';
-  if(curView==='week')loadWeeks();
+document.querySelectorAll('[data-view]').forEach(function(b){b.onclick=function(){
+  document.querySelectorAll('[data-view]').forEach(function(x){x.classList.remove('on')});
+  b.classList.add('on');CV=b.dataset.view;
+  wS.style.display=CV==='week'?'':'none';
+  if(CV==='week')loadWeeks();
 }});
-$t.onchange=function(){loadItems();if(curView==='week')loadWeeks()};
-$i.onchange=loadTT;
+tS.onchange=function(){loadItems();if(CV==='week')loadWeeks()};
+iS.onchange=loadTT;
+wS.onchange=loadTT;
 
-function fetchJSON(u){return fetch(u).then(function(r){return r.json()})}
+function J(u){return fetch(u).then(function(r){return r.json()})}
 
 function loadTerms(){
-  fetchJSON(BASE+'/api/terms').then(function(d){
-    $t.innerHTML='';
-    (d.terms||[]).forEach(function(o){
-      var e=document.createElement('option');e.value=o.value;e.textContent=o.label;$t.appendChild(e);
-    });
-    $t.disabled=false;loadItems();
-  }).catch(function(){$t.innerHTML='<option>載入失敗</option>'});
+  J(B+'/api/terms').then(function(d){
+    tS.innerHTML='';(d.terms||[]).forEach(function(o){
+      var e=document.createElement('option');e.value=o.value;e.textContent=o.label;tS.appendChild(e);
+    });tS.disabled=false;loadItems();
+  }).catch(function(){tS.innerHTML='<option>失敗</option>'});
 }
 
 function loadItems(){
-  var term=$t.value;if(!term)return;
-  $i.disabled=true;$i.innerHTML='<option>載入中...</option>';
-  var ep=tE[curType];
-  fetchJSON(BASE+'/api/'+ep+'?term='+encodeURIComponent(term)).then(function(d){
-    var items=d[ep]||[];$i.innerHTML='<option>請選擇'+tL[curType]+'</option>';
-    items.forEach(function(o){var e=document.createElement('option');e.value=o.value;e.textContent=o.label;$i.appendChild(e)});
-    $i.disabled=false;
-  }).catch(function(){$i.innerHTML='<option>載入失敗</option>'});
+  var t=tS.value;if(!t)return;
+  iS.disabled=true;iS.innerHTML='<option>載入中...</option>';
+  J(B+'/api/'+TE[CT]+'?term='+encodeURIComponent(t)).then(function(d){
+    var it=d[TE[CT]]||[];iS.innerHTML='<option>選擇'+TL[CT]+'</option>';
+    it.forEach(function(o){var e=document.createElement('option');e.value=o.value;e.textContent=o.label;iS.appendChild(e)});
+    iS.disabled=false;
+  }).catch(function(){iS.innerHTML='<option>失敗</option>'});
 }
 
 function loadWeeks(){
-  var term=$t.value;if(!term)return;
-  $w.disabled=true;$w.innerHTML='<option>載入中...</option>';
-  fetchJSON(BASE+'/api/weeks?term='+encodeURIComponent(term)).then(function(d){
-    var items=d.weeks||[];$w.innerHTML='<option>請選擇周次</option>';
-    items.forEach(function(o){var e=document.createElement('option');e.value=o.value;e.textContent=o.label;$w.appendChild(e)});
-    $w.disabled=false;
-  }).catch(function(){$w.innerHTML='<option>載入失敗</option>'});
+  var t=tS.value;if(!t)return;
+  wS.disabled=true;wS.innerHTML='<option>載入中...</option>';
+  J(B+'/api/weeks?term='+encodeURIComponent(t)).then(function(d){
+    var it=d.weeks||[];wS.innerHTML='<option>選擇周次</option>';
+    it.forEach(function(o){var e=document.createElement('option');e.value=o.value;e.textContent=o.label;wS.appendChild(e)});
+    wS.disabled=false;
+    autoWeek(it);
+  }).catch(function(){wS.innerHTML='<option>失敗</option>'});
+}
+
+function autoWeek(weeks){
+  var now=new Date();var today=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  for(var i=0;i<weeks.length;i++){
+    var m=weeks[i].label.match(/(\\d+)\\.(\\d+)\\.(\\d+)[～〜~](\\d+)\\.(\\d+)\\.(\\d+)/);
+    if(!m)continue;
+    var s=new Date(parseInt(m[1],10)+1911,parseInt(m[2],10)-1,parseInt(m[3],10));
+    var e=new Date(parseInt(m[4],10)+1911,parseInt(m[5],10)-1,parseInt(m[6],10));
+    if(today>=s&&today<=e){wS.value=weeks[i].value;return}
+  }
 }
 
 function loadTT(){
-  var code=$i.value,term=$t.value;
-  if(!code||!term)return;
-  if(curView==='week'&&!$w.value){return}
-  $m.innerHTML='<div class="ld"><div class="sp"></div></div>';
-  var u=BASE+'/api/timetable?type='+curType+'&code='+encodeURIComponent(code)+'&term='+encodeURIComponent(term);
-  if(curView==='week')u+='&week='+encodeURIComponent($w.value);
-  fetchJSON(u).then(function(d){
-    if(d.error){$m.innerHTML='<div class="err">'+d.error+'</div>';return}
+  var c=iS.value,t=tS.value;if(!c||!t)return;
+  if(CV==='week'&&!wS.value)return;
+  mn.innerHTML='<div class="ld"><div class="sp"></div></div>';
+  var u=B+'/api/timetable?type='+CT+'&code='+encodeURIComponent(c)+'&term='+encodeURIComponent(t);
+  if(CV==='week')u+='&week='+encodeURIComponent(wS.value);
+  J(u).then(function(d){
+    if(d.error){mn.innerHTML='<div class="err">'+E(d.error)+'</div>';return}
     render(d);
-  }).catch(function(e){$m.innerHTML='<div class="err">載入失敗：'+e.message+'</div>'});
+  }).catch(function(e){mn.innerHTML='<div class="err">'+E(e.message)+'</div>'});
 }
 
-function render(data){
-  var pp=data.periods||[],ss=data.schedule||[],dd=data.days||['一','二','三','四','五','六'],map={};
-  ss.forEach(function(c){map[c.period+'_'+c.day]=c.courses||[]});
-  var lbl=$i.options[$i.selectedIndex]?( $i.options[$i.selectedIndex].text):data.code;
-  var h='<div class="tt">'+esc(lbl)+' 課表';
-  if(data.term)h+=' <span class="badge">'+esc(data.term)+'</span>';
-  if(data.weekNo)h+=' <span class="badge" style="background:#059669">第'+esc(data.weekNo)+'周</span>';
-  h+='</div><div class="wrap"><table class="t"><thead><tr><th>節次</th>';
-  dd.forEach(function(d){h+='<th>星期'+d+'</th>'});
+function render(d){
+  var pp=d.periods||[],ss=d.schedule||[],dd=d.days||['一','二','三','四','五','六'],m={};
+  ss.forEach(function(c){m[c.period+'_'+c.day]=c.courses||[]});
+  var lb=iS.options[iS.selectedIndex]?iS.options[iS.selectedIndex].text:d.code;
+  var h='<div class="head"><h2>'+E(lb)+'</h2>';
+  if(d.term||d.weekNo){
+    h+='<span class="meta">';
+    if(d.term)h+=E(d.term);
+    if(d.weekNo)h+=' · 第'+E(d.weekNo)+'週';
+    h+='</span>';
+  }
+  h+='</div><div class="table-wrap"><table class="tt"><thead><tr><th></th>';
+  dd.forEach(function(x){h+='<th>週'+x+'</th>'});
   h+='</tr></thead><tbody>';
   pp.forEach(function(p,pi){
-    var sc=p.section==='morning'?'am':'pm';
-    h+='<tr class="'+sc+'"><td class="pc"><span class="pn">'+esc(p.name)+'</span><span class="pt">'+esc(p.time)+'</span></td>';
-    for(var d=0;d<6;d++){
-      var k=pi+'_'+d,cs=map[k]||[];
+    var sc=p.section==='morning'?'morning':'afternoon';
+    h+='<tr class="'+sc+'"><td class="per"><b>'+E(p.name)+'</b><i>'+E(p.time)+'</i></td>';
+    for(var di=0;di<6;di++){
+      var k=pi+'_'+di,cs=m[k]||[];
       h+='<td>';
-      cs.forEach(function(c){
-        h+='<div class="cc"><div class="cn">'+esc(c.name)+'</div><div class="cm">';
-        if(c.teacher)h+='<span>'+esc(c.teacher)+'</span>';
-        if(c.room)h+='<span>'+esc(c.room)+'</span>';
-        if(c.weekType){var cl=c.weekType.indexOf('單')>=0?'o':'e';h+='<span class="wt '+cl+'">'+esc(c.weekType)+'</span>'}
-        h+='</div></div>';
+      cs.forEach(function(c,i){
+        if(i>0)h+='<div style="height:4px"></div>';
+        h+='<div class="card"><div class="cn">'+E(c.name);
+        if(c.weekType){var cl=c.weekType.indexOf('單')>=0?'o':'e';h+='<span class="tag '+cl+'">'+E(c.weekType)+'</span>'}
+        h+='</div>';
+        var parts=[];
+        if(c.teacher)parts.push(c.teacher);
+        if(c.room)parts.push(c.room);
+        if(parts.length)h+='<div class="cm">'+E(parts.join(' · '))+'</div>';
+        h+='</div>';
       });
       h+='</td>';
     }
     h+='</tr>';
   });
   h+='</tbody></table></div>';
-  $m.innerHTML=h;
+  mn.innerHTML=h;
 }
 
-function esc(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''}
+function E(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''}
 loadTerms();
 })();
 <` + `/script>
