@@ -3,7 +3,7 @@ const SOURCE_BASE = "http://class.ckgsh.ntpc.edu.tw/classtable";
 import { signToken, verifyToken, getTokenFromCookie, setCookieHeader, clearCookieHeader } from "./auth";
 import type { JWTPayload } from "./auth";
 import { createUser, getUserByEmail, verifyPassword, createMagicLink, verifyMagicLink, getUserById, getSubscriptions, addSubscription, deleteSubscription, toggleSubscription, getAllActiveSubscriptions } from "./db";
-import { sendDailyEmail, sendMagicLinkEmail } from "./email";
+import { sendDailyEmail, sendMagicLinkEmail, sendTestEmail } from "./email";
 
 interface Env {
   SOURCE_BASE_URL: string;
@@ -363,7 +363,7 @@ function HTML_PAGE(page: string, user: { sub: string; email: string } | null): s
   }
 
   if (page === "settings") {
-    return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>設定 — 課表查詢</title><style>${CSS}</style></head><body><div class="page">${NAV}<h2 style="font-size:1.15rem;font-weight:600;margin-bottom:20px">每日課表訂閱</h2><p style="color:var(--tm);font-size:.85rem;margin-bottom:20px">設定後每天 05:30 自動寄送當日課表至 ${user ? user.email : ""}</p><div class="sub-add"><div><label>學期</label><select class="sel" id="aTerm" disabled><option>載入中</option></select></div><div><label>類型</label><select class="sel" id="aType"><option value="class">班級</option><option value="teacher">教師</option><option value="room">教室</option></select></div><div><label>項目</label><select class="sel" id="aItem" disabled><option>請先選學期</option></select></div><div><button class="btn pri" id="addBtn">新增</button></div></div><div class="sub-list" id="subList"></div>${FOOTER}</div><script>(function(){var B=location.origin,tS=document.getElementById('aTerm'),iS=document.getElementById('aItem'),tY=document.getElementById('aType'),sL=document.getElementById('subList');function J(u){return fetch(u).then(function(r){return r.json()})}function E(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''}
+    return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>設定 — 課表查詢</title><style>${CSS}</style></head><body><div class="page">${NAV}<h2 style="font-size:1.15rem;font-weight:600;margin-bottom:20px">每日課表訂閱</h2><p style="color:var(--tm);font-size:.85rem;margin-bottom:20px">設定後每天 05:30 自動寄送當日課表至 ${user ? user.email : ""}</p><div class="sub-add"><div><label>學期</label><select class="sel" id="aTerm" disabled><option>載入中</option></select></div><div><label>類型</label><select class="sel" id="aType"><option value="class">班級</option><option value="teacher">教師</option><option value="room">教室</option></select></div><div><label>項目</label><select class="sel" id="aItem" disabled><option>請先選學期</option></select></div><div><button class="btn pri" id="addBtn">新增</button></div></div><div class="sub-list" id="subList"></div><div style="margin-top:32px;padding-top:24px;border-top:1px solid var(--bd)"><h2 style="font-size:1.15rem;font-weight:600;margin-bottom:12px">SMTP 測試</h2><p style="color:var(--tm);font-size:.85rem;margin-bottom:12px">寄送測試郵件確認 SMTP 設定是否正常</p><button class="btn ghost" id="testBtn">寄送測試郵件</button><div id="testMsg" style="margin-top:12px;font-size:.85rem"></div></div>${FOOTER}</div><script>(function(){var B=location.origin,tS=document.getElementById('aTerm'),iS=document.getElementById('aItem'),tY=document.getElementById('aType'),sL=document.getElementById('subList'),tM=document.getElementById('testMsg');function J(u){return fetch(u).then(function(r){return r.json()})}function E(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''}
 // Load terms
 J(B+'/api/terms').then(function(d){tS.innerHTML='';(d.terms||[]).forEach(function(o){var e=document.createElement('option');e.value=o.value;e.textContent=o.label;tS.appendChild(e)});tS.disabled=false;loadItems()});
 tS.onchange=loadItems;tY.onchange=loadItems;
@@ -374,7 +374,9 @@ loadSubs();
 // Add subscription
 document.getElementById('addBtn').onclick=function(){var t=tS.value,c=iS.value,l=iS.options[iS.selectedIndex]?iS.options[iS.selectedIndex].text:'',ty=tY.value;if(!c)return;fetch(B+'/api/subscriptions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:ty,code:c,label:l,term:t})}).then(function(){loadSubs()})};
 // Toggle/delete
-sL.addEventListener('click',function(e){var t=e.target;if(t.dataset.toggle){var id=parseInt(t.dataset.toggle);var isOn=t.classList.contains('on');fetch(B+'/api/subscriptions/'+id+'/toggle',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:isOn?0:1})}).then(function(){loadSubs()})}if(t.dataset.del){fetch(B+'/api/subscriptions/'+t.dataset.del,{method:'DELETE'}).then(function(){loadSubs()})}})})()</` + `script></body></html>`;
+sL.addEventListener('click',function(e){var t=e.target;if(t.dataset.toggle){var id=parseInt(t.dataset.toggle);var isOn=t.classList.contains('on');fetch(B+'/api/subscriptions/'+id+'/toggle',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:isOn?0:1})}).then(function(){loadSubs()})}if(t.dataset.del){fetch(B+'/api/subscriptions/'+t.dataset.del,{method:'DELETE'}).then(function(){loadSubs()})}}});
+// Test email
+document.getElementById('testBtn').onclick=function(){tM.textContent='寄送中...';tM.style.color='var(--tm)';fetch(B+'/api/test-email',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.success){tM.style.color='#16a34a';tM.textContent='寄送成功！請檢查收件匣。'}else{tM.style.color='#eb5757';tM.textContent='寄送失敗：'+(d.log||[]).slice(-3).join('; ')}}).catch(function(){tM.style.color='#eb5757';tM.textContent='連線失敗'})}})()</` + `script></body></html>`;
   }
 
   // Default: index (timetable viewer)
@@ -512,6 +514,18 @@ export default {
         return jsonResponse({ message: "Login link sent to your email" });
       } catch (e) {
         return errorResponse(`Magic link failed: ${(e as Error).message}`);
+      }
+    }
+
+    // POST /api/test-email (auth required)
+    if (url.pathname === "/api/test-email" && request.method === "POST") {
+      const authUser = await getAuthUser(request, env);
+      if (!authUser) return errorResponse("Unauthorized", 401);
+      try {
+        const result = await sendTestEmail(env, authUser.email);
+        return jsonResponse(result);
+      } catch (e) {
+        return jsonResponse({ success: false, log: [(e as Error).message] });
       }
     }
 

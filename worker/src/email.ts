@@ -1,5 +1,5 @@
 // SMTP client using Cloudflare Workers connect() API
-// Works with Gmail SMTP (smtp.gmail.com:465, SSL)
+// Gmail SMTP: smtp.gmail.com:465 (implicit TLS)
 
 import { connect } from "cloudflare:sockets";
 
@@ -7,7 +7,7 @@ interface SmtpConfig {
   host: string;
   port: number;
   user: string;
-  pass: string; // app password
+  pass: string;
 }
 
 function getSmtpConfig(env: {
@@ -16,82 +16,144 @@ function getSmtpConfig(env: {
 }): SmtpConfig {
   return {
     host: "smtp.gmail.com",
-    port: 465,
+    port: 587, // STARTTLS, not implicit TLS
     user: env.SMTP_EMAIL,
     pass: env.SMTP_PASSWORD,
   };
 }
 
-// Base64 encode for SMTP AUTH
 function b64(s: string): string {
-  return btoa(s);
-}
-
-// Read lines from a TextStreamReader
-async function readLine(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  decoder: TextDecoder
-): Promise<string> {
-  let line = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    line += decoder.decode(value, { stream: true });
-    // SMTP responses end with \r\n
-    if (line.endsWith("\r\n")) break;
+  // Handle UTF-8 for btoa
+  const bytes = new TextEncoder().encode(s);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
   }
-  return line.trim();
+  return btoa(binary);
 }
 
-async function sendSmtp(
+async function readResponse(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  decoder: TextDecoder,
+  timeoutMs = 10000
+): Promise<string> {
+  let buffer = "";
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const readPromise = reader.read();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("SMTP read timeout")), deadline - Date.now())
+    );
+
+    try {
+      const { value, done } = await Promise.race([readPromise, timeoutPromise]);
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SMTP multi-line responses: check if a line starts with "XYZ " (3-digit + space = last line)
+      const lines = buffer.split("\r\n");
+      for (const line of lines) {
+        if (/^\d{3} /.test(line)) {
+          return buffer.trim();
+        }
+      }
+    } catch (e) {
+      throw new Error(`SMTP read error: ${(e as Error).message}`);
+    }
+  }
+
+  if (!buffer) throw new Error("SMTP: no response received");
+  return buffer.trim();
+}
+
+export async function sendSmtp(
   config: SmtpConfig,
   from: string,
   to: string,
   subject: string,
   htmlBody: string
-): Promise<void> {
-  const socket = await connect(
+): Promise<{ success: boolean; log: string[] }> {
+  const log: string[] = [];
+
+  // Port 587 = STARTTLS (start as plaintext, upgrade after STARTTLS command)
+  let socket = await connect(
     { hostname: config.host, port: config.port },
     { secureTransport: "starttls", allowHalfOpen: false }
   );
 
-  const reader = socket.readable.getReader();
-  const writer = socket.writable.getWriter();
+  let reader = socket.readable.getReader();
+  let writer = socket.writable.getWriter();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
-  async function send(cmd: string): Promise<string> {
+  async function smtpCmd(cmd: string, label?: string): Promise<string> {
     await writer.write(encoder.encode(cmd + "\r\n"));
-    const resp = await readLine(reader, decoder);
+    const resp = await readResponse(reader, decoder);
+    log.push(`> ${label || cmd.substring(0, 40)}`);
+    log.push(`< ${resp}`);
     return resp;
   }
 
   try {
-    // Read initial greeting
-    await readLine(reader, decoder);
+    // Greeting
+    const greeting = await readResponse(reader, decoder);
+    log.push(`< GREETING: ${greeting}`);
+    if (!greeting.startsWith("220")) throw new Error(`Bad greeting: ${greeting}`);
 
     // EHLO
-    await send("EHLO classtable");
+    const ehlo = await smtpCmd("EHLO classtable", "EHLO");
+    if (!ehlo.startsWith("250")) throw new Error(`EHLO failed: ${ehlo}`);
+
+    // STARTTLS
+    const starttlsResp = await smtpCmd("STARTTLS", "STARTTLS");
+    if (!starttlsResp.startsWith("220")) throw new Error(`STARTTLS failed: ${starttlsResp}`);
+
+    // Release all locks before TLS upgrade
+    reader.releaseLock();
+    writer.releaseLock();
+    // Upgrade to TLS - returns a new socket
+    socket = socket.startTls();
+    // Wait for TLS handshake to complete
+    await new Promise(r => setTimeout(r, 200));
+    reader = socket.readable.getReader();
+    writer = socket.writable.getWriter();
+
+    // EHLO again after STARTTLS
+    const ehlo2 = await smtpCmd("EHLO classtable", "EHLO (after TLS)");
+    if (!ehlo2.startsWith("250")) throw new Error(`EHLO after TLS failed: ${ehlo2}`);
 
     // AUTH LOGIN
-    await send("AUTH LOGIN");
-    await send(b64(config.user));
-    await send(b64(config.pass));
+    const authInit = await smtpCmd("AUTH LOGIN", "AUTH LOGIN");
+    if (!authInit.startsWith("334")) throw new Error(`AUTH LOGIN failed: ${authInit}`);
 
-    // MAIL FROM / RCPT TO
-    await send(`MAIL FROM:<${from}>`);
-    await send(`RCPT TO:<${to}>`);
+    const userResp = await smtpCmd(b64(config.user), "USERNAME");
+    if (!userResp.startsWith("334")) throw new Error(`Username rejected: ${userResp}`);
+
+    const passResp = await smtpCmd(b64(config.pass), "PASSWORD");
+    if (!passResp.startsWith("235")) throw new Error(`Auth failed: ${passResp}`);
+
+    // MAIL FROM
+    const mailFrom = await smtpCmd(`MAIL FROM:<${from}>`, "MAIL FROM");
+    if (!mailFrom.startsWith("250")) throw new Error(`MAIL FROM failed: ${mailFrom}`);
+
+    // RCPT TO
+    const rcptTo = await smtpCmd(`RCPT TO:<${to}>`, "RCPT TO");
+    if (!rcptTo.startsWith("250")) throw new Error(`RCPT TO failed: ${rcptTo}`);
 
     // DATA
-    await send("DATA");
+    const dataResp = await smtpCmd("DATA", "DATA");
+    if (!dataResp.startsWith("354")) throw new Error(`DATA failed: ${dataResp}`);
 
     // Build email
-    const boundary = "boundary_" + Date.now();
+    const boundary = "b_" + Date.now();
     const date = new Date().toUTCString();
-    const mime = [
+    const encodedSubject = `=?UTF-8?B?${b64(unescape(encodeURIComponent(subject)))}?=`;
+
+    const email = [
       `From: ${from}`,
       `To: ${to}`,
-      `Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`,
+      `Subject: ${encodedSubject}`,
       `Date: ${date}`,
       `MIME-Version: 1.0`,
       `Content-Type: multipart/alternative; boundary="${boundary}"`,
@@ -107,18 +169,22 @@ async function sendSmtp(
       `.`,
     ].join("\r\n");
 
-    await writer.write(encoder.encode(mime + "\r\n"));
-    await readLine(reader, decoder);
+    await writer.write(encoder.encode(email + "\r\n"));
+    const sendResp = await readResponse(reader, decoder);
+    log.push(`< SEND: ${sendResp}`);
 
     // QUIT
-    await send("QUIT");
+    await smtpCmd("QUIT", "QUIT");
+
+    return { success: true, log };
+  } catch (e) {
+    log.push(`ERROR: ${(e as Error).message}`);
+    try { await writer.close(); } catch {}
+    try { socket.close(); } catch {}
+    return { success: false, log };
   } finally {
-    try {
-      await writer.close();
-    } catch {}
-    try {
-      socket.close();
-    } catch {}
+    try { await writer.close(); } catch {}
+    try { socket.close(); } catch {}
   }
 }
 
@@ -192,14 +258,16 @@ export async function sendDailyEmail(
 ): Promise<void> {
   const config = getSmtpConfig(env);
   const hasData = courses.some((c) => c.items.length > 0);
-
-  await sendSmtp(
+  const result = await sendSmtp(
     config,
     config.user,
     to,
     hasData ? `今日課表 — ${label}` : "請設定您的課表訂閱",
     hasData ? buildTimetableHtml(label, courses) : buildReminderHtml()
   );
+  if (!result.success) {
+    throw new Error(`SMTP failed: ${result.log.join("; ")}`);
+  }
 }
 
 export async function sendMagicLinkEmail(
@@ -208,7 +276,7 @@ export async function sendMagicLinkEmail(
   token: string
 ): Promise<void> {
   const config = getSmtpConfig(env);
-  const link = `https://classtable-api.ctze.workers.dev/api/auth/verify-magic?token=${token}`;
+  const link = `https://classtable-api.ctze.workers.dev/api/auth/verify-magic?token=${encodeURIComponent(token)}`;
 
   const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
@@ -221,5 +289,26 @@ export async function sendMagicLinkEmail(
 </div>
 </body></html>`;
 
-  await sendSmtp(config, config.user, to, "登入驗證連結", html);
+  const result = await sendSmtp(config, config.user, to, "登入驗證連結", html);
+  if (!result.success) {
+    throw new Error(`SMTP failed: ${result.log.join("; ")}`);
+  }
+}
+
+export async function sendTestEmail(
+  env: { SMTP_EMAIL: string; SMTP_PASSWORD: string },
+  to: string
+): Promise<{ success: boolean; log: string[] }> {
+  const config = getSmtpConfig(env);
+  const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family:-apple-system,sans-serif;background:#f7f6f3;padding:24px;margin:0">
+<div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:24px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.08)">
+  <h2 style="color:#37352f;margin:0 0 12px">測試郵件</h2>
+  <p style="color:#64748b;font-size:.85rem">這是一封測試郵件，表示 SMTP 設定正確。</p>
+  <p style="color:#9b9a97;font-size:.75rem;margin-top:16px">發送時間：${new Date().toISOString()}</p>
+</div>
+</body></html>`;
+
+  return sendSmtp(config, config.user, to, "課表查詢 — 測試郵件", html);
 }
